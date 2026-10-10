@@ -1,0 +1,13 @@
+{
+  "version": "1.0.0",
+  "description": "Provisional weights. Experience is intentionally not a weighted component yet.",
+  "weights": {
+    "required_skills": 0.50,
+    "semantic_similarity": 0.35,
+    "preferred_skills": 0.15
+  },
+  "semantic": {
+    "floor": 0.0,
+    "ceiling": 1.0
+  }
+}
