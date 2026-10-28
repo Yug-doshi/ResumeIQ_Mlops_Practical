@@ -3,12 +3,14 @@ from __future__ import annotations
 
 import logging
 from contextlib import asynccontextmanager
+from time import perf_counter
 from typing import Optional
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
+from prometheus_client import CONTENT_TYPE_LATEST, CollectorRegistry, Counter, Histogram, generate_latest
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app import API_VERSION, __version__
@@ -67,6 +69,20 @@ def create_app(settings: Optional[Settings] = None, matcher: Optional[SemanticMa
     )
     app.state.services = services
 
+    metrics_registry = CollectorRegistry()
+    http_requests = Counter(
+        "resumeiq_http_requests",
+        "Total HTTP requests served by ResumeIQ.",
+        ("method", "route", "status"),
+        registry=metrics_registry,
+    )
+    http_request_duration = Histogram(
+        "resumeiq_http_request_duration_seconds",
+        "HTTP request duration in seconds.",
+        ("method", "route"),
+        registry=metrics_registry,
+    )
+
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origin_list,
@@ -74,6 +90,23 @@ def create_app(settings: Optional[Settings] = None, matcher: Optional[SemanticMa
         allow_headers=["*"],
         expose_headers=["Content-Disposition"],
     )
+
+    @app.middleware("http")
+    async def collect_http_metrics(request: Request, call_next):
+        if request.url.path == "/metrics":
+            return await call_next(request)
+
+        started = perf_counter()
+        status_code = 500
+        try:
+            response = await call_next(request)
+            status_code = response.status_code
+            return response
+        finally:
+            route = request.scope.get("route")
+            route_path = getattr(route, "path", "unmatched")
+            http_requests.labels(request.method, route_path, str(status_code)).inc()
+            http_request_duration.labels(request.method, route_path).observe(perf_counter() - started)
 
     @app.middleware("http")
     async def limit_request_size(request: Request, call_next):
@@ -99,6 +132,10 @@ def create_app(settings: Optional[Settings] = None, matcher: Optional[SemanticMa
     async def unhandled_handler(_: Request, exc: Exception):
         logger.exception("Unhandled error")  # stack trace stays in the server log only
         return _error(500, "internal_error", "An unexpected error occurred.")
+
+    @app.get("/metrics", include_in_schema=False)
+    def metrics() -> Response:
+        return Response(content=generate_latest(metrics_registry), media_type=CONTENT_TYPE_LATEST)
 
     app.include_router(health.router)
     app.include_router(model_info.router)

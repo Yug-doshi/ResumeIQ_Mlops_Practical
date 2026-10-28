@@ -1,0 +1,90 @@
+﻿
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: resumeiq-backend
+    ports:
+      - "8000:8000"
+    environment:
+      APP_NAME: ResumeIQ
+      ENVIRONMENT: docker
+      LOG_LEVEL: INFO
+      CORS_ORIGINS: http://localhost:8080,http://127.0.0.1:8080
+      MODEL_NAME: sentence-transformers/all-MiniLM-L6-v2
+      MODEL_CACHE_DIR: /models/huggingface
+      PRELOAD_MODEL: "true"
+      MODEL_LOCAL_FILES_ONLY: "false"
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+    volumes:
+      - model_cache:/models/huggingface
+      - mlflow_data:/mlflow
+    depends_on:
+      mlflow:
+        condition: service_healthy
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_API_BASE_URL: http://localhost:8000
+    container_name: resumeiq-frontend
+    ports:
+      - "8080:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+  mlflow:
+    image: python:3.11-slim
+    container_name: resumeiq-mlflow
+    working_dir: /mlflow
+    command:
+      - sh
+      - -c
+      - pip install --no-cache-dir mlflow==3.17.0 && mlflow server --backend-store-uri sqlite:////mlflow/mlflow.db --host 0.0.0.0 --port 5000
+    ports:
+      - "5000:5000"
+    volumes:
+      - mlflow_data:/mlflow
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/health', timeout=2)"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 30s
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    container_name: resumeiq-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:12.1.1
+    container_name: resumeiq-grafana
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
+volumes:
+  model_cache:
+  mlflow_data:
+  prometheus_data:
+  grafana_data:

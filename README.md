@@ -1,8 +1,14 @@
 # ResumeIQ — Intelligent Resume Screening and Skill Matching
 
-Phase 1 of an MLOps project: a working resume-screening application (React frontend + FastAPI backend).
-MLflow, DVC, Airflow, Docker/Kubernetes, CI/CD and monitoring are **not** implemented yet; the code is
-structured so they can be added later (see "Where MLOps plugs in").
+ResumeIQ is a resume-screening application (React frontend + FastAPI backend) with a local MLOps stack:
+Docker Compose, MLflow experiment tracking, Prometheus API monitoring, and GitHub Actions CI/container publishing.
+The ranking benchmark uses synthetic resumes only; it is a repeatable smoke benchmark, not a measure of real-world
+accuracy or hiring outcomes.
+
+For a presentation-ready explanation of the MLOps concepts, code locations,
+demo steps, and example outputs, see [MLOPS_PRESENTATION.md](MLOPS_PRESENTATION.md).
+For exact commands and a complete live-demo checklist, see
+[MLOPS_DEMO_STEPS.md](MLOPS_DEMO_STEPS.md).
 
 ```
 resumeiq/
@@ -65,6 +71,48 @@ Open http://localhost:5173.
 | Frontend | http://localhost:5173 |
 | API docs (Swagger) | http://localhost:8000/docs |
 | Health | http://localhost:8000/health |
+| Prometheus metrics | http://localhost:8000/metrics |
+| Prometheus query UI | http://localhost:9090 |
+| Grafana dashboard | http://localhost:3000 (default login: `admin` / `admin`) |
+| MLflow experiments | http://localhost:5000 |
+
+### Run the Docker MLOps stack
+From the repository root:
+```powershell
+docker compose up --build
+```
+The Compose stack serves the frontend on port 8080, the API on 8000, MLflow on 5000, Prometheus on 9090, and Grafana
+on 3000. The API sends experiment tracking to MLflow; Prometheus scrapes the API every 15 seconds; Grafana is
+provisioned with Prometheus as its data source and the ResumeIQ API dashboard. Model files and MLflow / Prometheus /
+Grafana data are kept in named Docker volumes. Grafana's first login is `admin` / `admin`; change the password when
+prompted. Stop the stack with `Ctrl+C`, then run `docker compose down`. To also remove persisted model and
+experiment/monitoring data, run `docker compose down --volumes`.
+
+Grafana's provisioned dashboard includes backend scrape health, total API requests, request rate grouped by route and
+status, p95 API latency, and response rate grouped by HTTP status. Its dashboard and datasource provisioning files are
+under `monitoring/grafana/`.
+
+The `/metrics` endpoint reports request totals and duration grouped by HTTP method, registered route template, and
+status code. It deliberately does not label metrics with raw URLs, filenames, or user data to avoid sensitive data
+exposure and high-cardinality labels.
+
+### GitHub Actions
+`.github/workflows/ci.yml` runs the offline backend test suite and frontend production build for pushes to `main` and
+pull requests. Once both pass, it builds both Docker images; pushes to `main` publish tagged images to GitHub Container
+Registry (`ghcr.io/<owner>/<repository>/backend` and `/frontend`) using the workflow's `GITHUB_TOKEN`. Pull requests
+build the images but do not publish them. Enable Actions and package publishing for the repository to use the publish
+step.
+
+### ML evaluation
+`backend/mlops/run_evaluation.py` submits a small, synthetic ranking benchmark to a running API and records
+Precision@k, Recall@k, MRR, and NDCG@k in MLflow. Start the Compose stack first, then in another terminal:
+```powershell
+cd backend
+python -m pip install -r requirements.txt
+python -m mlops.run_evaluation
+```
+The benchmark uses generated DOCX resumes and preassigned synthetic grades. It is for checking pipeline wiring and
+comparing code/model changes, not for claims about candidate quality.
 
 ### Try the API in Swagger
 Open `/docs` → `POST /api/v1/match` → *Try it out*. Fill `job_title`, `job_description`, optional `required_skills`
@@ -159,16 +207,18 @@ evaluation of the scoring approach.
 - Experience and education are shown for reviewers, not scored.
 - Two-column or heavily designed PDFs may extract text in a different order.
 
-## Where MLOps plugs in later (not implemented)
-| Future component | Seam in this code |
+## MLOps components and boundaries
+| Component | Implemented behavior |
 |---|---|
-| MLflow registry / versioned model | Implement another `EmbeddingBackend` (`services/semantic_matcher.py`) and pass it to `create_app(matcher=...)` |
-| DVC / data versioning | `config/skills.json` and `config/scoring.json` are plain versioned files; `/api/v1/config` exposes version + SHA-256 |
-| Evaluation / quality gates | `compute_score` and `SemanticMatcher` are pure, importable functions; `tests/` shows how to evaluate with a stub embedder |
-| Docker / Kubernetes | Settings come from env vars; `/health` (liveness) and `/health/ready` (readiness) are ready for probes |
-| Prometheus / Grafana / drift | Single orchestration point `MatchingService.run` (add metrics there); `request_id` and model/scoring versions are in every response |
-| Airflow / retraining | Inference is isolated from training; the API never trains or downloads on a prediction request |
-| CI/CD | `pytest` (fast, offline) and `pytest -m integration` (real model) are separate commands |
+| Docker Compose | Runs frontend, API, MLflow, and Prometheus locally with persistent named volumes |
+| MLflow | Tracks safe aggregate matching metrics and synthetic ranking-evaluation runs; no resume text or names are logged |
+| Prometheus and Grafana | Prometheus scrapes API request counts and durations from `/metrics`; Grafana visualizes backend status, request traffic, and latency |
+| GitHub Actions | Runs offline backend tests and the frontend build, then builds container images and publishes them to GHCR on `main` |
+| Ranking evaluation | Synthetic benchmark logs Precision@k, Recall@k, MRR, and NDCG@k to MLflow |
+
+This application uses a pretrained sentence-transformer for inference; it does not train or retrain a model. DVC,
+Kubernetes, drift detection, automated model promotion, and production deployment are not included. The
+Compose stack is for local development/demo use, not a production deployment.
 
 ## Troubleshooting
 - **`Cannot reach the ResumeIQ backend`** — start uvicorn; check `VITE_API_BASE_URL`; restart `npm run dev` after editing `.env`.
